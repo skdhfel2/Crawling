@@ -1,0 +1,29 @@
+# 환경변수 파일 (API 키 포함)
+.env
+
+# 다운로드된 PDF 파일들
+downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 테스트 출력
+*.log
+test_output.txt
