@@ -283,25 +283,21 @@ class PubMedCrawler:
             if error is not None:
                 return None
             
-            # 다운로드 링크 찾기 (PDF 우선, 없으면 tgz)
-            record = root.find('.//record')
-            if record is None:
-                return None
-                
-            links = record.findall('.//link')
-            
+            # 모든 레코드에서 다운로드 링크 찾기
             pdf_link = None
             tgz_link = None
             
-            for link in links:
-                fmt = link.get('format', '')
-                href = link.get('href', '')
-                
-                if fmt == 'pdf':
-                    pdf_link = href
-                elif fmt == 'tgz':
-                    tgz_link = href
+            for record in root.findall('.//record'):
+                for link in record.findall('.//link'):
+                    fmt = link.get('format', '')
+                    href = link.get('href', '')
+                    
+                    if fmt == 'pdf' and not pdf_link:
+                        pdf_link = href
+                    elif fmt == 'tgz' and not tgz_link:
+                        tgz_link = href
             
+            # PDF 우선 반환
             if pdf_link:
                 return (pdf_link, 'pdf')
             elif tgz_link:
@@ -337,18 +333,38 @@ class PubMedCrawler:
                 os.remove(local_path)
             return False
     
-    def extract_pdf_from_tgz(self, tgz_path: str, output_path: str) -> bool:
-        """tar.gz 파일에서 PDF 추출"""
+    def extract_pdf_from_tgz(self, tgz_path: str, output_path: str, pmc_id: str = "") -> bool:
+        """tar.gz 파일에서 PDF 추출 (PMC ID 매칭 우선)"""
         try:
             with tarfile.open(tgz_path, 'r:gz') as tar:
+                pdf_members = []
+                
                 for member in tar.getmembers():
                     if member.name.lower().endswith('.pdf'):
-                        # PDF 파일 추출
-                        pdf_file = tar.extractfile(member)
-                        if pdf_file:
-                            with open(output_path, 'wb') as f:
-                                f.write(pdf_file.read())
-                            return True
+                        pdf_members.append(member)
+                
+                if not pdf_members:
+                    return False
+                
+                # PMC ID가 포함된 PDF 우선 선택
+                target_member = None
+                pmc_num = pmc_id.replace('PMC', '') if pmc_id else ''
+                
+                for member in pdf_members:
+                    if pmc_num and pmc_num in member.name:
+                        target_member = member
+                        break
+                
+                # PMC ID 매칭 안되면 가장 큰 PDF 선택 (보통 메인 논문)
+                if target_member is None:
+                    target_member = max(pdf_members, key=lambda m: m.size)
+                
+                pdf_file = tar.extractfile(target_member)
+                if pdf_file:
+                    with open(output_path, 'wb') as f:
+                        f.write(pdf_file.read())
+                    return True
+                    
             return False
         except Exception as e:
             return False
@@ -388,7 +404,7 @@ class PubMedCrawler:
                 if not self.download_from_ftp(url, tgz_path):
                     return (False, 'tgz_download_failed')
                 
-                if self.extract_pdf_from_tgz(tgz_path, filepath):
+                if self.extract_pdf_from_tgz(tgz_path, filepath, pmc_id):
                     return (True, 'extracted_from_tgz')
                 else:
                     return (False, 'pdf_extraction_failed')
@@ -410,14 +426,13 @@ class PubMedCrawler:
         print(f"\n[*] Fetching PMC article metadata...")
         
         articles = {}
-        batch_size = 50  # 배치 크기 줄임
+        batch_size = 50
         
         # PMC ID에서 숫자만 추출
         numeric_ids = [pmc_id.replace('PMC', '') for pmc_id in pmc_ids]
         
         for i in range(0, len(numeric_ids), batch_size):
             batch = numeric_ids[i:i + batch_size]
-            batch_pmc_ids = pmc_ids[i:i + batch_size]
             
             params = {
                 'db': 'pmc',
@@ -432,18 +447,27 @@ class PubMedCrawler:
                 
             try:
                 root = ET.fromstring(response.content)
-                article_elements = root.findall('.//article')
                 
-                # 순서대로 매칭 (API가 요청 순서대로 반환)
-                for idx, article in enumerate(article_elements):
-                    if idx >= len(batch_pmc_ids):
-                        break
+                for article in root.findall('.//article'):
+                    # PMC ID 직접 추출 (정확한 매칭을 위해)
+                    pmc_id = None
+                    for aid in article.findall('.//article-id'):
+                        id_type = aid.get('pub-id-type', '')
+                        if id_type in ['pmcid', 'pmc'] and aid.text:
+                            pmc_id = aid.text
+                            if not pmc_id.startswith('PMC'):
+                                pmc_id = f"PMC{pmc_id}"
+                            break
+                        elif id_type == 'pmcaid' and aid.text:
+                            pmc_id = f"PMC{aid.text}"
+                            break
                     
-                    pmc_id = batch_pmc_ids[idx]
+                    if not pmc_id:
+                        continue
                     
-                    # 제목 (여러 경로 시도)
+                    # 제목
                     title = "Unknown"
-                    for title_path in ['.//article-title', './/title-group/article-title', './/front/article-meta/title-group/article-title']:
+                    for title_path in ['.//article-title', './/title-group/article-title']:
                         title_elem = article.find(title_path)
                         if title_elem is not None:
                             title = "".join(title_elem.itertext()).strip()
