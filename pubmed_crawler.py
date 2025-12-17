@@ -107,16 +107,23 @@ class PubMedCrawler:
     
     def search_pmc(self, query: str, max_results: int = 100, 
                     start_date: Optional[str] = None, 
-                    end_date: Optional[str] = None) -> List[str]:
-        """PMC 데이터베이스에서 직접 검색 (Open Access 논문만)"""
-        print(f"\n[*] Searching PMC (Open Access): '{query}'")
+                    end_date: Optional[str] = None,
+                    sort: str = "date") -> List[str]:
+        """PMC 데이터베이스에서 직접 검색 (Open Access 논문만)
+        
+        Args:
+            sort: 'relevance' (Best match) 또는 'date' (Most recent)
+        """
+        sort_display = "Best match" if sort == "relevance" else "Most recent"
+        print(f"\n[*] Searching PMC (Open Access): '{query}' [Sort: {sort_display}]")
         
         params = {
             'db': 'pmc',
             'term': query,
             'retmax': max_results,
             'retmode': 'json',
-            'usehistory': 'y'
+            'usehistory': 'y',
+            'sort': sort
         }
         
         if start_date and end_date:
@@ -147,42 +154,90 @@ class PubMedCrawler:
         
         return pmc_ids
     
+    def search_pubmed(self, query: str, max_results: int = 100, 
+                      start_date: Optional[str] = None, 
+                      end_date: Optional[str] = None,
+                      sort: str = "relevance") -> List[str]:
+        """PubMed에서 검색 (웹사이트와 동일한 결과)
+        
+        Args:
+            sort: 'relevance' (Best match) 또는 'date' (Most recent)
+        """
+        sort_display = "Best match" if sort == "relevance" else "Most recent"
+        print(f"\n[*] Searching PubMed: '{query}' [Sort: {sort_display}]")
+        
+        params = {
+            'db': 'pubmed',
+            'term': query,
+            'retmax': max_results,
+            'retmode': 'json',
+            'sort': sort
+        }
+        
+        if start_date and end_date:
+            params['datetype'] = 'pdat'
+            params['mindate'] = start_date
+            params['maxdate'] = end_date
+        
+        response = self._make_request(self.ESEARCH_URL, params)
+        
+        if not response:
+            print("[X] Search failed")
+            return []
+            
+        data = response.json()
+        
+        if 'esearchresult' not in data:
+            print("[X] Failed to parse search results")
+            return []
+            
+        result = data['esearchresult']
+        total_count = int(result.get('count', 0))
+        id_list = result.get('idlist', [])
+        
+        print(f"    Found {total_count:,} total results, fetched {len(id_list)}")
+        
+        return id_list
+    
     def get_pmc_ids(self, pubmed_ids: List[str]) -> Dict[str, str]:
-        """PubMed ID를 PMC ID로 변환"""
+        """PubMed ID를 PMC ID로 변환 (EFetch 사용)"""
         print(f"\n[*] Looking up PMC IDs ({len(pubmed_ids)} articles)...")
         
         pmc_map = {}
-        batch_size = 200
+        batch_size = 100
         
         for i in range(0, len(pubmed_ids), batch_size):
             batch = pubmed_ids[i:i + batch_size]
             
             params = {
-                'dbfrom': 'pubmed',
-                'db': 'pmc',
+                'db': 'pubmed',
                 'id': ','.join(batch),
-                'retmode': 'json'
+                'retmode': 'xml'
             }
             
-            response = self._make_request(self.ELINK_URL, params)
+            response = self._make_request(self.EFETCH_URL, params)
             
             if not response:
                 continue
                 
             try:
-                data = response.json()
-                linksets = data.get('linksets', [])
+                root = ET.fromstring(response.content)
                 
-                for linkset in linksets:
-                    pmid = str(linkset.get('ids', [None])[0])
-                    linksetdbs = linkset.get('linksetdbs', [])
+                for article in root.findall('.//PubmedArticle'):
+                    # PMID 가져오기
+                    pmid_elem = article.find('.//PMID')
+                    if pmid_elem is None or not pmid_elem.text:
+                        continue
+                    pmid = pmid_elem.text
                     
-                    for linksetdb in linksetdbs:
-                        if linksetdb.get('dbto') == 'pmc':
-                            links = linksetdb.get('links', [])
-                            if links:
-                                pmc_id = f"PMC{links[0]}"
-                                pmc_map[pmid] = pmc_id
+                    # PMC ID 가져오기 (첫 번째 것만)
+                    pmc_elem = article.find('.//ArticleId[@IdType="pmc"]')
+                    if pmc_elem is not None and pmc_elem.text:
+                        pmc_id = pmc_elem.text
+                        if not pmc_id.startswith('PMC'):
+                            pmc_id = f"PMC{pmc_id}"
+                        pmc_map[pmid] = pmc_id
+                        
             except Exception as e:
                 print(f"  [!] PMC ID parsing error: {e}")
                 
@@ -518,23 +573,53 @@ class PubMedCrawler:
     
     def crawl(self, query: str, max_results: int = 100,
               start_date: Optional[str] = None,
-              end_date: Optional[str] = None) -> Dict:
-        """크롤링 실행"""
+              end_date: Optional[str] = None,
+              sort: str = "date",
+              source: str = "pmc") -> Dict:
+        """크롤링 실행
+        
+        Args:
+            source: 'pubmed' (PubMed 검색 → PMC 매핑) 또는 'pmc' (PMC 직접 검색)
+        """
         start_time = datetime.now()
         print("="*60)
         print("  PMC PDF Crawler (Open Access)")
         print("="*60)
         
-        # 1. PMC 직접 검색
-        pmc_ids = self.search_pmc(query, max_results, start_date, end_date)
+        if source == "pubmed":
+            # PubMed 검색 → PMC 매핑
+            pubmed_ids = self.search_pubmed(query, max_results, start_date, end_date, sort)
+            
+            if not pubmed_ids:
+                return {'status': 'error', 'message': 'No search results'}
+            
+            # PMC ID 매핑
+            pmc_map = self.get_pmc_ids(pubmed_ids)
+            
+            if not pmc_map:
+                print("\n[X] No articles available in PMC")
+                return {'status': 'error', 'message': 'No Open Access articles in PMC'}
+            
+            pmc_ids = list(pmc_map.values())
+            
+            # 논문 정보 (PubMed 기준)
+            articles = self.get_article_info(pubmed_ids)
+            # PMC ID로 재매핑
+            pmc_articles = {}
+            for pmid, pmc_id in pmc_map.items():
+                if pmid in articles:
+                    pmc_articles[pmc_id] = articles[pmid]
+            articles = pmc_articles
+        else:
+            # PMC 직접 검색
+            pmc_ids = self.search_pmc(query, max_results, start_date, end_date, sort)
+            
+            if not pmc_ids:
+                return {'status': 'error', 'message': 'No search results'}
+            
+            articles = self.get_pmc_article_info(pmc_ids)
         
-        if not pmc_ids:
-            return {'status': 'error', 'message': 'No search results'}
-        
-        # 2. 논문 정보 가져오기
-        articles = self.get_pmc_article_info(pmc_ids)
-        
-        # 3. PDF 다운로드
+        # PDF 다운로드
         print(f"\n[*] Downloading PDFs ({len(pmc_ids)} articles)...")
         
         success_count = 0
@@ -614,8 +699,9 @@ def main():
         epilog="""
 Examples:
   python pubmed_crawler.py --query "machine learning"
-  python pubmed_crawler.py --query "COVID-19" --max_results 50
+  python pubmed_crawler.py --query "COVID-19" --max_results 50 --sort relevance
   python pubmed_crawler.py --query "cancer" --start_date 2023/01/01 --end_date 2024/01/01
+  python pubmed_crawler.py --query "data" --source pubmed --sort relevance
         """
     )
     
@@ -631,6 +717,12 @@ Examples:
                        help='Start date (YYYY/MM/DD format)')
     parser.add_argument('--end_date', type=str, default=None,
                        help='End date (YYYY/MM/DD format)')
+    parser.add_argument('--sort', '-s', type=str, default='date',
+                       choices=['relevance', 'date'],
+                       help='Sort order: relevance (Best match) or date (Most recent, default)')
+    parser.add_argument('--source', type=str, default='pmc',
+                       choices=['pubmed', 'pmc'],
+                       help='Search source: pubmed (same as website) or pmc (Open Access only, default)')
     
     args = parser.parse_args()
     
@@ -643,7 +735,9 @@ Examples:
         query=args.query,
         max_results=args.max_results,
         start_date=args.start_date,
-        end_date=args.end_date
+        end_date=args.end_date,
+        sort=args.sort,
+        source=args.source
     )
 
 

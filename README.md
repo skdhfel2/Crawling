@@ -17,7 +17,7 @@ python pubmed_crawler.py --query "검색어"
 
 ### 전체 옵션
 ```bash
-python pubmed_crawler.py --query "machine learning" --max_results 50 --output ./papers
+python pubmed_crawler.py --query "machine learning" --max_results 50 --source pubmed --sort relevance
 ```
 
 | 옵션 | 단축 | 설명 | 기본값 |
@@ -25,6 +25,8 @@ python pubmed_crawler.py --query "machine learning" --max_results 50 --output ./
 | `--query` | `-q` | 검색어 (필수) | - |
 | `--max_results` | `-m` | 최대 결과 수 | 100 |
 | `--output` | `-o` | 저장 디렉토리 | downloads |
+| `--source` | - | 검색 소스: `pubmed` (웹과 동일) 또는 `pmc` | pmc |
+| `--sort` | `-s` | 정렬: `relevance` (관련도) 또는 `date` (최신순) | date |
 | `--api_key` | `-k` | NCBI API 키 | None |
 | `--start_date` | - | 시작 날짜 (YYYY/MM/DD) | None |
 | `--end_date` | - | 종료 날짜 (YYYY/MM/DD) | None |
@@ -32,21 +34,19 @@ python pubmed_crawler.py --query "machine learning" --max_results 50 --output ./
 ### 예제
 
 ```bash
-# 기본 검색
-python pubmed_crawler.py --query "COVID-19"
+# PubMed 웹사이트와 동일한 결과 (Best match 순)
+python pubmed_crawler.py --query "data" --source pubmed --sort relevance --max_results 20
 
-# 최대 50개만 다운로드
-python pubmed_crawler.py --query "cancer treatment" --max_results 50
+# PMC에서 최신순 검색 (기본값)
+python pubmed_crawler.py --query "COVID-19" --sort date
 
 # 날짜 범위 지정
 python pubmed_crawler.py --query "diabetes" --start_date 2023/01/01 --end_date 2024/01/01
 
 # 특정 폴더에 저장
 python pubmed_crawler.py --query "machine learning healthcare" --output ./ml_papers
-
-# API 키 사용 (속도 향상)
-python pubmed_crawler.py --query "genomics" --api_key YOUR_API_KEY
 ```
+
 
 ## 📁 출력 구조
 
